@@ -10,3 +10,11 @@ o-voxel/*
 nvdiffrast/*
 nvdiffrec/*
 fp8_models/*
+
+# Claude AI
+.claude/
+*.egg
+
+# IDE
+.idea/
+.vscode/

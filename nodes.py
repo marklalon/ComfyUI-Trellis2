@@ -772,13 +772,24 @@ class Trellis2ExportMesh:
     CATEGORY = "Trellis2Wrapper"
     OUTPUT_NODE = True
 
-    def process(self, trimesh, filename_prefix, file_format):        
-        full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(filename_prefix, folder_paths.get_output_directory())                      
-        output_glb_path = Path(full_output_folder, f'{filename}_{counter:05}_.{file_format}')
+    def process(self, trimesh, filename_prefix, file_format):
+        full_output_folder, filename, _, subfolder, filename_prefix = folder_paths.get_save_image_path(filename_prefix, folder_paths.get_output_directory())
+        output_folder = Path(full_output_folder)
+        output_folder.mkdir(parents=True, exist_ok=True)
+        existing = [p.stem for p in output_folder.glob(f'{filename}_*.{file_format}')]
+        counter = 1
+        for stem in existing:
+            try:
+                n = int(stem[len(filename)+1:len(filename)+6])
+                if n >= counter:
+                    counter = n + 1
+            except (ValueError, IndexError):
+                pass
+        output_glb_path = Path(full_output_folder, f'{filename}_{counter:05}.{file_format}')
         output_glb_path.parent.mkdir(exist_ok=True)
 
         if file_format=='obj':
-            materialName = f"{filename}_{counter:05}_.mtl"
+            materialName = f"{filename}_{counter:05}.mtl"
             if hasattr(trimesh, 'visual') and hasattr(trimesh.visual, 'material') and trimesh.visual.material is not None:
                 trimesh.visual.material.name = f"{filename}_{counter:05}"
 
@@ -786,9 +797,15 @@ class Trellis2ExportMesh:
         else:
             trimesh.export(output_glb_path, file_type=file_format)
             
-        relative_path = Path(subfolder) / f'{filename}_{counter:05}_.{file_format}'
-        
-        return (str(output_glb_path), str(relative_path), )        
+        relative_path = Path(subfolder) / f'{filename}_{counter:05}.{file_format}'
+        mesh_filename = f'{filename}_{counter:05}.{file_format}'
+
+        print(f"[Trellis2ExportMesh] Saved: {output_glb_path}")
+
+        return {
+            "ui": {"files": [{"filename": mesh_filename, "subfolder": subfolder, "type": "output"}]},
+            "result": (str(output_glb_path), str(relative_path),)
+        }
         
 class Trellis2PostProcessMesh:
     @classmethod
@@ -1075,7 +1092,7 @@ class Trellis2UnWrapAndRasterizer:
                     vertex_colors=vertex_colors_rgba,
                     process=False,
                 )                
-            
+                        
             del cumesh
             gc.collect()
             
@@ -2761,7 +2778,7 @@ class Trellis2SmoothNormals:
         new_mesh = trimesh.copy()
         new_mesh.vertex_normals = Trimesh.smoothing.get_vertices_normals(new_mesh)
         
-        return (new_mesh,)         
+        return (new_mesh,)
 
 class Trellis2RemeshWithQuad:
     @classmethod
@@ -2997,7 +3014,7 @@ class Trellis2BatchSimplifyMeshAndExport:
                 filename_prefix_with_nbfaces = f"{filename_prefix}_{target_nbfaces}"
 
                 full_output_folder, filename, counter, subfolder, filename_prefix_with_nbfaces = folder_paths.get_save_image_path(filename_prefix_with_nbfaces, folder_paths.get_output_directory())                
-                output_glb_path = Path(full_output_folder, f'{filename}_{counter:05}_.{file_format}')
+                output_glb_path = Path(full_output_folder, f'{filename}_{counter:05}.{file_format}')
                 output_glb_path.parent.mkdir(exist_ok=True)
                 
                 trimesh.export(output_glb_path, file_type=file_format)
