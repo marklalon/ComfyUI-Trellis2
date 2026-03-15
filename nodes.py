@@ -169,6 +169,24 @@ def tensor_batch_to_pil_list(images: torch.Tensor, max_views: int = 4) -> list[I
         return [tensor2pil(images)]
 
     raise ValueError(f"Unsupported IMAGE tensor shape: {tuple(images.shape)}")    
+
+def normalize_vertices_to_unit_cube(vertices: np.ndarray) -> np.ndarray:
+    """
+    Centers vertices and scales them uniformly to fit inside [-1, 1]^3.
+    """
+    if vertices.size == 0:
+        return vertices
+
+    min_corner = vertices.min(axis=0)
+    max_corner = vertices.max(axis=0)
+    center = (min_corner + max_corner) / 2.0
+    extents = max_corner - min_corner
+    max_extent = float(np.max(extents))
+
+    if max_extent <= 0.0:
+        return vertices - center
+
+    return (vertices - center) * (2.0 / max_extent)
     
 def convert_tensor_images_to_pil(images):
     pil_array = []
@@ -743,9 +761,11 @@ class Trellis2MeshWithVoxelToTrimesh:
         vertices_np = mesh_copy.vertices.cpu().numpy()
         
         if reorient_vertices == '90 degrees':
-            vertices_np[:, 1], vertices_np[:, 2] = vertices_np[:, 2], -vertices_np[:, 1]
+            vertices_np[:, 1], vertices_np[:, 2] = vertices_np[:, 2].copy(), -vertices_np[:, 1].copy()
         elif reorient_vertices == '-90 degrees':
-            vertices_np[:, 1], vertices_np[:, 2] = -vertices_np[:, 2], vertices_np[:, 1]
+            vertices_np[:, 1], vertices_np[:, 2] = -vertices_np[:, 2].copy(), vertices_np[:, 1].copy()
+
+        vertices_np = normalize_vertices_to_unit_cube(vertices_np)
         
         trimesh = Trimesh.Trimesh(
             vertices=vertices_np,
