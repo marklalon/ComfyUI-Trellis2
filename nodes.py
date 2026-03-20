@@ -222,45 +222,67 @@ def simplify_with_meshlib(vertices, faces, target=1000000):
         
     return new_vertices, new_faces
 
+def _fast_remove_floater_np(vertices, faces, ratio=0.005):
+    """Remove small disconnected components using scipy sparse graph.
+    Keeps only components with face count >= ratio * total_faces.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    num_verts = len(vertices)
+    num_faces = len(faces)
+    print(f"Current faces: {num_faces}")
+
+    # Build adjacency graph from faces (vertex-vertex connectivity)
+    edges_i = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2]])
+    edges_j = np.concatenate([faces[:, 1], faces[:, 2], faces[:, 0]])
+    data = np.ones(len(edges_i), dtype=np.int8)
+    adj = coo_matrix((data, (edges_i, edges_j)), shape=(num_verts, num_verts))
+
+    n_components, labels = connected_components(adj, directed=False)
+
+    if n_components <= 1:
+        print(f"After removing floater: {num_faces}")
+        return vertices, faces
+
+    # Count faces per component (use label of first vertex of each face)
+    face_labels = labels[faces[:, 0]]
+    comp_face_counts = np.bincount(face_labels, minlength=n_components)
+
+    # Keep components with enough faces
+    min_faces = max(1, int(num_faces * ratio))
+    keep_comps = set(np.where(comp_face_counts >= min_faces)[0])
+
+    # Filter faces
+    keep_mask = np.zeros(n_components, dtype=bool)
+    keep_mask[list(keep_comps)] = True
+    face_mask = keep_mask[face_labels]
+    new_faces = faces[face_mask]
+
+    # Reindex vertices (remove unused)
+    used_verts = np.unique(new_faces)
+    vert_map = np.full(num_verts, -1, dtype=np.int64)
+    vert_map[used_verts] = np.arange(len(used_verts))
+    new_vertices = vertices[used_verts]
+    new_faces = vert_map[new_faces].astype(np.int32)
+
+    print(f"After removing floater: {len(new_faces)}")
+    return new_vertices, new_faces
+
 def remove_floater(mesh):
     print('Removing floater ...')
+    vertices = mesh.vertices.cpu().numpy()
     faces = mesh.faces.cpu().numpy()
-    print(f"Current faces: {len(faces)}")
-    mesh_set = pymeshlab.MeshSet()
-    mesh_pymeshlab = pymeshlab.Mesh(vertex_matrix=mesh.vertices.cpu().numpy(), face_matrix=faces)
-    mesh_set.add_mesh(mesh_pymeshlab, "converted_mesh")
-    mesh_set = pymeshlab_remove_floater(mesh_set)
-    
-    mesh_pymeshlab = mesh_set.current_mesh()    
-    
-    new_faces = mesh_pymeshlab.face_matrix()
-    print(f"After removing floater: {len(new_faces)}")
-    
-    new_vertices = torch.from_numpy(mesh_pymeshlab.vertex_matrix()).contiguous().float()
-    new_faces = torch.from_numpy(new_faces).contiguous().int()   
-    
-    mesh.vertices = new_vertices
-    mesh.faces = new_faces
-    
+
+    new_vertices, new_faces = _fast_remove_floater_np(vertices, faces)
+
+    mesh.vertices = torch.from_numpy(new_vertices).contiguous().float()
+    mesh.faces = torch.from_numpy(new_faces).contiguous().int()
     return mesh
-    
+
 def remove_floater2(vertices, faces):
     print('Removing floater ...')
-    #faces = faces.cpu().numpy()
-    print(f"Current faces: {len(faces)}")
-    mesh_set = pymeshlab.MeshSet()
-    mesh_pymeshlab = pymeshlab.Mesh(vertex_matrix=vertices, face_matrix=faces)
-    mesh_set.add_mesh(mesh_pymeshlab, "converted_mesh")
-    mesh_set = pymeshlab_remove_floater(mesh_set)
-    
-    mesh_pymeshlab = mesh_set.current_mesh()    
-    
-    new_faces = mesh_pymeshlab.face_matrix()
-    print(f"After removing floater: {len(new_faces)}")
-    
-    new_vertices = mesh_pymeshlab.vertex_matrix()
-    
-    return new_vertices, new_faces
+    return _fast_remove_floater_np(vertices, faces)
 
 def remove_mesh_infinite_vertices(mesh):
     print('Removing infinite vertices ...')
@@ -1996,16 +2018,12 @@ class Trellis2Remesh:
         # Initialize CUDA mesh handler
         cumesh = CuMesh.CuMesh()
         cumesh.init(vertices, faces)
-        print(f"Current vertices: {cumesh.num_vertices}, faces: {cumesh.num_faces}")        
+        print(f"Current vertices: {cumesh.num_vertices}, faces: {cumesh.num_faces}")
         
         vertices, faces = cumesh.read()
         
         del cumesh
         gc.collect()         
-            
-        # Build BVH for the current mesh to guide remeshing
-        #print(f"Building BVH for current mesh...")
-        #bvh = CuMesh.cuBVH(vertices.detach().clone(), faces.detach().clone())
             
         print("Cleaning mesh...")        
         center = aabb.mean(dim=0)
@@ -2034,13 +2052,13 @@ class Trellis2Remesh:
         if remove_floaters:
             vertices, faces = remove_floater2(vertices.cpu().numpy(),faces.cpu().numpy())
             vertices = torch.from_numpy(vertices).contiguous().float()
-            faces = torch.from_numpy(faces).contiguous().int() 
+            faces = torch.from_numpy(faces).contiguous().int()
             
         print(f"After remeshing: {len(vertices)} vertices, {len(faces)} faces")                                 
         
         mesh_copy.vertices = vertices.to(mesh_copy.device)
         mesh_copy.faces = faces.to(mesh_copy.device) 
-                
+        
         return (mesh_copy,)
         
 class Trellis2ReconstructMesh:
@@ -2882,10 +2900,6 @@ class Trellis2RemeshWithQuad:
         
         del cumesh
         gc.collect()         
-            
-        # Build BVH for the current mesh to guide remeshing
-        #print(f"Building BVH for current mesh...")
-        #bvh = CuMesh.cuBVH(vertices.detach().clone(), faces.detach().clone())
             
         print("Cleaning mesh...")        
         center = aabb.mean(dim=0)
