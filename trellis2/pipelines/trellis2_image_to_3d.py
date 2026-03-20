@@ -13,6 +13,8 @@ from .. import models
 
 import gc
 import os
+import time
+import logging
 import folder_paths
 import trimesh
 import o_voxel
@@ -25,6 +27,26 @@ from flex_gemm.ops.grid_sample import grid_sample_3d
 import random
 
 from comfy.utils import ProgressBar
+
+# Performance logging — set TRELLIS2_PERF_LOG=1 to enable
+_PERF_ENABLED = os.getenv("TRELLIS2_PERF_LOG", "0") == "1"
+_perf_log = logging.getLogger("trellis2.perf")
+if _PERF_ENABLED and not _perf_log.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("[%(name)s] %(message)s"))
+    _perf_log.addHandler(_handler)
+    _perf_log.setLevel(logging.INFO)
+
+def _log_perf(stage: str, t0: float):
+    if not _PERF_ENABLED:
+        return
+    elapsed = time.perf_counter() - t0
+    if torch.cuda.is_available():
+        alloc = torch.cuda.memory_allocated() / 1024**2
+        reserved = torch.cuda.memory_reserved() / 1024**2
+        _perf_log.info(f"[PERF] {stage}: {elapsed:.2f}s | VRAM alloc={alloc:.0f}MB reserved={reserved:.0f}MB")
+    else:
+        _perf_log.info(f"[PERF] {stage}: {elapsed:.2f}s")
 
 def pil2tensor(image):
     return torch.from_numpy(np.array(image).astype(np.float32) / 255.0)[None,]
@@ -144,7 +166,9 @@ class Trellis2ImageTo3DPipeline(Pipeline):
     def _cleanup_cuda(self):
         gc.collect()
         if torch.cuda.is_available():
-            torch.cuda.synchronize()
+            # synchronize() is intentionally omitted: PyTorch's memory allocator
+            # already tracks which allocations are in flight; explicit sync here
+            # just adds a GPU stall without benefit for cache clearing.
             torch.cuda.empty_cache()
 
     @classmethod
@@ -199,17 +223,15 @@ class Trellis2ImageTo3DPipeline(Pipeline):
 
         return pipeline
         
-    def load_sparse_structure_model(self):        
+    def load_sparse_structure_model(self):
         if self.models['sparse_structure_flow_model'] is None:
             print('Loading Sparse Structure model ...')
-            self.models['sparse_structure_flow_model'] = models.from_pretrained(f"{self.path}/{self._pretrained_args['models']['sparse_structure_flow_model']}")
+            self.models['sparse_structure_flow_model'] = models.from_pretrained(f"{self.path}/{self._pretrained_args['models']['sparse_structure_flow_model']}", device=str(self._device))
             self.models['sparse_structure_flow_model'].eval()
-            self.models['sparse_structure_flow_model'].to(self._device)
-        
-        if self.models['sparse_structure_decoder'] is None:            
-            self.models['sparse_structure_decoder'] = models.from_pretrained(self._pretrained_args['models']['sparse_structure_decoder'])
-            self.models['sparse_structure_decoder'].eval()        
-            self.models['sparse_structure_decoder'].to(self._device)
+
+        if self.models['sparse_structure_decoder'] is None:
+            self.models['sparse_structure_decoder'] = models.from_pretrained(self._pretrained_args['models']['sparse_structure_decoder'], device=str(self._device))
+            self.models['sparse_structure_decoder'].eval()
             if hasattr(self.models['sparse_structure_decoder'], 'low_vram'):
                 self.models['sparse_structure_decoder'].low_vram = self.low_vram
     
@@ -236,12 +258,11 @@ class Trellis2ImageTo3DPipeline(Pipeline):
             self.image_cond_model = None            
             self._cleanup_cuda()
             
-    def load_shape_slat_flow_model_512(self):        
+    def load_shape_slat_flow_model_512(self):
         if self.models['shape_slat_flow_model_512'] is None:
             print('Loading Shape Slat Flow 512 model ...')
-            self.models['shape_slat_flow_model_512'] = models.from_pretrained(f"{self.path}/{self._pretrained_args['models']['shape_slat_flow_model_512']}")
+            self.models['shape_slat_flow_model_512'] = models.from_pretrained(f"{self.path}/{self._pretrained_args['models']['shape_slat_flow_model_512']}", device=str(self._device))
             self.models['shape_slat_flow_model_512'].eval()
-            self.models['shape_slat_flow_model_512'].to(self._device)
             
     def unload_shape_slat_flow_model_512(self):
         if self.models['shape_slat_flow_model_512'] is not None:
@@ -249,12 +270,11 @@ class Trellis2ImageTo3DPipeline(Pipeline):
             self.models['shape_slat_flow_model_512'] = None
             self._cleanup_cuda()
             
-    def load_tex_slat_flow_model_512(self):        
+    def load_tex_slat_flow_model_512(self):
         if self.models['tex_slat_flow_model_512'] is None:
             print('Loading Texture Slat Flow 512 model ...')
-            self.models['tex_slat_flow_model_512'] = models.from_pretrained(f"{self.path}/{self._pretrained_args['models']['tex_slat_flow_model_512']}")
-            self.models['tex_slat_flow_model_512'].eval()
-            self.models['tex_slat_flow_model_512'].to(self._device)          
+            self.models['tex_slat_flow_model_512'] = models.from_pretrained(f"{self.path}/{self._pretrained_args['models']['tex_slat_flow_model_512']}", device=str(self._device))
+            self.models['tex_slat_flow_model_512'].eval()          
 
     def unload_tex_slat_flow_model_512(self):
         if self.models['tex_slat_flow_model_512'] is not None:
@@ -262,12 +282,11 @@ class Trellis2ImageTo3DPipeline(Pipeline):
             self.models['tex_slat_flow_model_512'] = None
             self._cleanup_cuda()
 
-    def load_tex_slat_decoder(self):        
+    def load_tex_slat_decoder(self):
         if self.models['tex_slat_decoder'] is None:
             print('Loading Texture Slat decoder model ...')
-            self.models['tex_slat_decoder'] = models.from_pretrained(f"{self.path}/{self._pretrained_args['models']['tex_slat_decoder']}")
+            self.models['tex_slat_decoder'] = models.from_pretrained(f"{self.path}/{self._pretrained_args['models']['tex_slat_decoder']}", device=str(self._device))
             self.models['tex_slat_decoder'].eval()
-            self.models['tex_slat_decoder'].to(self._device)
             if hasattr(self.models['tex_slat_decoder'], 'low_vram'):
                 self.models['tex_slat_decoder'].low_vram = self.low_vram
 
@@ -277,12 +296,11 @@ class Trellis2ImageTo3DPipeline(Pipeline):
             self.models['tex_slat_decoder'] = None
             self._cleanup_cuda()
             
-    def load_shape_slat_decoder(self):        
+    def load_shape_slat_decoder(self):
         if self.models['shape_slat_decoder'] is None:
             print('Loading Shape Slat decoder model ...')
-            self.models['shape_slat_decoder'] = models.from_pretrained(f"{self.path}/{self._pretrained_args['models']['shape_slat_decoder']}")
+            self.models['shape_slat_decoder'] = models.from_pretrained(f"{self.path}/{self._pretrained_args['models']['shape_slat_decoder']}", device=str(self._device))
             self.models['shape_slat_decoder'].eval()
-            self.models['shape_slat_decoder'].to(self._device)
             if hasattr(self.models['shape_slat_decoder'], 'low_vram'):
                 self.models['shape_slat_decoder'].low_vram = self.low_vram
 
@@ -292,12 +310,11 @@ class Trellis2ImageTo3DPipeline(Pipeline):
             self.models['shape_slat_decoder'] = None
             self._cleanup_cuda()
 
-    def load_shape_slat_flow_model_1024(self):        
+    def load_shape_slat_flow_model_1024(self):
         if self.models['shape_slat_flow_model_1024'] is None:
             print('Loading Shape Slat Flow 1024 model ...')
-            self.models['shape_slat_flow_model_1024'] = models.from_pretrained(f"{self.path}/{self._pretrained_args['models']['shape_slat_flow_model_1024']}")
-            self.models['shape_slat_flow_model_1024'].eval()
-            self.models['shape_slat_flow_model_1024'].to(self._device)           
+            self.models['shape_slat_flow_model_1024'] = models.from_pretrained(f"{self.path}/{self._pretrained_args['models']['shape_slat_flow_model_1024']}", device=str(self._device))
+            self.models['shape_slat_flow_model_1024'].eval()           
 
     def unload_shape_slat_flow_model_1024(self):
         if self.models['shape_slat_flow_model_1024'] is not None:
@@ -305,12 +322,11 @@ class Trellis2ImageTo3DPipeline(Pipeline):
             self.models['shape_slat_flow_model_1024'] = None
             self._cleanup_cuda()
 
-    def load_tex_slat_flow_model_1024(self):        
+    def load_tex_slat_flow_model_1024(self):
         if self.models['tex_slat_flow_model_1024'] is None:
             print('Loading Texture Slat Flow 1024 model ...')
-            self.models['tex_slat_flow_model_1024'] = models.from_pretrained(f"{self.path}/{self._pretrained_args['models']['tex_slat_flow_model_1024']}")
-            self.models['tex_slat_flow_model_1024'].eval()
-            self.models['tex_slat_flow_model_1024'].to(self._device)                   
+            self.models['tex_slat_flow_model_1024'] = models.from_pretrained(f"{self.path}/{self._pretrained_args['models']['tex_slat_flow_model_1024']}", device=str(self._device))
+            self.models['tex_slat_flow_model_1024'].eval()                   
 
     def unload_tex_slat_flow_model_1024(self):
         if self.models['tex_slat_flow_model_1024'] is not None:
@@ -318,15 +334,14 @@ class Trellis2ImageTo3DPipeline(Pipeline):
             self.models['tex_slat_flow_model_1024'] = None
             self._cleanup_cuda()
 
-    def load_shape_slat_encoder(self):        
+    def load_shape_slat_encoder(self):
         if self.models['shape_slat_encoder'] is None:
             print('Loading Shape Slat Encoder model ...')
             if getattr(self, 'use_fp8', False):
-                self.models['shape_slat_encoder'] = models.from_pretrained(f"{self.path}/ckpts_fp8/shape_enc_next_dc_f16c32_fp8") 
+                self.models['shape_slat_encoder'] = models.from_pretrained(f"{self.path}/ckpts_fp8/shape_enc_next_dc_f16c32_fp8", device=str(self._device))
             else:
-                self.models['shape_slat_encoder'] = models.from_pretrained(f"{self.path}/ckpts/shape_enc_next_dc_f16c32_fp16")
+                self.models['shape_slat_encoder'] = models.from_pretrained(f"{self.path}/ckpts/shape_enc_next_dc_f16c32_fp16", device=str(self._device))
             self.models['shape_slat_encoder'].eval()
-            self.models['shape_slat_encoder'].to(self._device)
             if hasattr(self.models['shape_slat_encoder'], 'low_vram'):
                 self.models['shape_slat_encoder'].low_vram = self.low_vram
 
@@ -950,63 +965,72 @@ class Trellis2ImageTo3DPipeline(Pipeline):
             images = [self.preprocess_image(im) for im in images]
             
         seed_all(seed)
-        
+        _t_run = time.perf_counter()
+
         # Get Image Cond
-        self.load_image_cond_model()        
-        # Multi-view conditioning happens inside get_cond()              
-        cond_512  = self.get_cond(images, 512, max_views = max_views)        
+        _t = time.perf_counter()
+        self.load_image_cond_model()
+        # Multi-view conditioning happens inside get_cond()
+        cond_512  = self.get_cond(images, 512, max_views = max_views)
         cond_1024 = self.get_cond(images, 1024, max_views = max_views) if pipeline_type != '512' else None
-        
+        _log_perf("image_cond", _t)
+
         if pbar is not None:
             pbar.update(1)
-        
+
         if not self.keep_models_loaded:
             self.unload_image_cond_model()
-        
+
         #ss_res = {'512': 32, '1024': 64, '1024_cascade': 32, '1536_cascade': 32}[pipeline_type]
-        
+
         # Sampling Sparse Structure
-        self.load_sparse_structure_model()        
+        _t = time.perf_counter()
+        self.load_sparse_structure_model()
         coords = self.sample_sparse_structure(
             cond_512, sparse_structure_resolution,
             num_samples, sparse_structure_sampler_params
         )
-        
+        _log_perf("sparse_structure_sampling", _t)
+
         if pbar is not None:
             pbar.update(1)
-        
+
         if not self.keep_models_loaded:
             self.unload_sparse_structure_model()
         
         # Sampling Shape
-        if pipeline_type == '512':            
+        _t = time.perf_counter()
+        if pipeline_type == '512':
             self.unload_shape_slat_flow_model_1024()
-            self.load_shape_slat_flow_model_512()            
+            self.load_shape_slat_flow_model_512()
             shape_slat = self.sample_shape_slat(
                 cond_512, self.models['shape_slat_flow_model_512'],
                 coords, shape_slat_sampler_params
             )
-            
+            _log_perf(f"shape_slat_sampling ({pipeline_type})", _t)
+
             if pbar is not None:
                 pbar.update(1)
-            
+
             if not self.keep_models_loaded:
                 self.unload_shape_slat_flow_model_512()
-            
+
             if generate_texture_slat:
                 self.unload_tex_slat_flow_model_1024()
                 self.load_tex_slat_flow_model_512()
+                _t_tex = time.perf_counter()
                 tex_slat = self.sample_tex_slat(
                     cond_512, self.models['tex_slat_flow_model_512'],
                     shape_slat, tex_slat_sampler_params
                 )
-                
+                _log_perf("tex_slat_sampling", _t_tex)
+
                 if pbar is not None:
                     pbar.update(1)
-            
+
             if not self.keep_models_loaded:
                 self.unload_tex_slat_flow_model_512()
-            
+
             res = 512
         elif pipeline_type == '1024':
             self.unload_shape_slat_flow_model_512()
@@ -1015,31 +1039,34 @@ class Trellis2ImageTo3DPipeline(Pipeline):
                 cond_1024, self.models['shape_slat_flow_model_1024'],
                 coords, shape_slat_sampler_params
             )
-            
+            _log_perf(f"shape_slat_sampling ({pipeline_type})", _t)
+
             if pbar is not None:
                 pbar.update(1)
-            
+
             if not self.keep_models_loaded:
                 self.unload_shape_slat_flow_model_1024()
-            
+
             if generate_texture_slat:
                 self.unload_tex_slat_flow_model_512()
                 self.load_tex_slat_flow_model_1024()
+                _t_tex = time.perf_counter()
                 tex_slat = self.sample_tex_slat(
                     cond_1024, self.models['tex_slat_flow_model_1024'],
                     shape_slat, tex_slat_sampler_params
                 )
-                
+                _log_perf("tex_slat_sampling", _t_tex)
+
                 if pbar is not None:
                     pbar.update(1)
-            
+
             if not self.keep_models_loaded:
                 self.unload_tex_slat_flow_model_1024()
-                
+
             res = 1024
         elif pipeline_type == '1024_cascade':
             self.load_shape_slat_flow_model_512()
-            self.load_shape_slat_flow_model_1024()            
+            self.load_shape_slat_flow_model_1024()
             shape_slat, res = self.sample_shape_slat_cascade(
                 cond_512, cond_1024,
                 self.models['shape_slat_flow_model_512'], self.models['shape_slat_flow_model_1024'],
@@ -1048,25 +1075,28 @@ class Trellis2ImageTo3DPipeline(Pipeline):
                 max_num_tokens,
                 sparse_structure_resolution
             )
-            
+            _log_perf(f"shape_slat_sampling ({pipeline_type})", _t)
+
             if pbar is not None:
                 pbar.update(1)
-            
+
             if not self.keep_models_loaded:
                 self.unload_shape_slat_flow_model_512()
                 self.unload_shape_slat_flow_model_1024()
-            
+
             if generate_texture_slat:
                 self.unload_tex_slat_flow_model_512()
                 self.load_tex_slat_flow_model_1024()
+                _t_tex = time.perf_counter()
                 tex_slat = self.sample_tex_slat(
                     cond_1024, self.models['tex_slat_flow_model_1024'],
                     shape_slat, tex_slat_sampler_params
                 )
-                
+                _log_perf("tex_slat_sampling", _t_tex)
+
             if pbar is not None:
                 pbar.update(1)
-            
+
             if not self.keep_models_loaded:
                 self.unload_tex_slat_flow_model_1024()
         elif pipeline_type == '2048_cascade':
@@ -1080,25 +1110,28 @@ class Trellis2ImageTo3DPipeline(Pipeline):
                 max_num_tokens,
                 sparse_structure_resolution
             )
-            
+            _log_perf(f"shape_slat_sampling ({pipeline_type})", _t)
+
             if pbar is not None:
                 pbar.update(1)
-            
+
             if not self.keep_models_loaded:
                 self.unload_shape_slat_flow_model_512()
                 self.unload_shape_slat_flow_model_1024()
-                
+
             if generate_texture_slat:
                 self.unload_tex_slat_flow_model_512()
                 self.load_tex_slat_flow_model_1024()
+                _t_tex = time.perf_counter()
                 tex_slat = self.sample_tex_slat(
                     cond_1024, self.models['tex_slat_flow_model_1024'],
                     shape_slat, tex_slat_sampler_params
                 )
-                
+                _log_perf("tex_slat_sampling", _t_tex)
+
                 if pbar is not None:
                     pbar.update(1)
-                
+
             if not self.keep_models_loaded:
                 self.unload_tex_slat_flow_model_1024()
         elif pipeline_type == '4096_cascade':
@@ -1112,30 +1145,33 @@ class Trellis2ImageTo3DPipeline(Pipeline):
                 max_num_tokens,
                 sparse_structure_resolution
             )
-            
+            _log_perf(f"shape_slat_sampling ({pipeline_type})", _t)
+
             if pbar is not None:
                 pbar.update(1)
-            
+
             if not self.keep_models_loaded:
                 self.unload_shape_slat_flow_model_512()
                 self.unload_shape_slat_flow_model_1024()
-                
+
             if generate_texture_slat:
                 self.unload_tex_slat_flow_model_512()
                 self.load_tex_slat_flow_model_1024()
+                _t_tex = time.perf_counter()
                 tex_slat = self.sample_tex_slat(
                     cond_1024, self.models['tex_slat_flow_model_1024'],
                     shape_slat, tex_slat_sampler_params
                 )
-                        
+                _log_perf("tex_slat_sampling", _t_tex)
+
                 if pbar is not None:
-                    pbar.update(1)  
-                
+                    pbar.update(1)
+
             if not self.keep_models_loaded:
                 self.unload_tex_slat_flow_model_1024()
         elif pipeline_type == '1536_cascade':
             self.load_shape_slat_flow_model_512()
-            self.load_shape_slat_flow_model_1024()                
+            self.load_shape_slat_flow_model_1024()
             shape_slat, res = self.sample_shape_slat_cascade(
                 cond_512, cond_1024,
                 self.models['shape_slat_flow_model_512'], self.models['shape_slat_flow_model_1024'],
@@ -1144,35 +1180,41 @@ class Trellis2ImageTo3DPipeline(Pipeline):
                 max_num_tokens,
                 sparse_structure_resolution
             )
-            
+            _log_perf(f"shape_slat_sampling ({pipeline_type})", _t)
+
             if pbar is not None:
                 pbar.update(1)
-            
+
             if not self.keep_models_loaded:
                 self.unload_shape_slat_flow_model_512()
                 self.unload_shape_slat_flow_model_1024()
-            
-            if generate_texture_slat:            
+
+            if generate_texture_slat:
                 self.unload_tex_slat_flow_model_512()
                 self.load_tex_slat_flow_model_1024()
+                _t_tex = time.perf_counter()
                 tex_slat = self.sample_tex_slat(
                     cond_1024, self.models['tex_slat_flow_model_1024'],
                     shape_slat, tex_slat_sampler_params
                 )
-                
+                _log_perf("tex_slat_sampling", _t_tex)
+
                 if pbar is not None:
                     pbar.update(1)
-            
+
             if not self.keep_models_loaded:
-                self.unload_tex_slat_flow_model_1024()               
-            
-        torch.cuda.empty_cache()
+                self.unload_tex_slat_flow_model_1024()
+
+        # decode_latent handles its own cleanup internally; one empty_cache after is sufficient
+        _t = time.perf_counter()
         if generate_texture_slat:
             out_mesh = self.decode_latent(shape_slat, tex_slat, res, use_tiled=use_tiled)
         else:
             out_mesh = self.decode_latent(shape_slat, None, res, use_tiled=use_tiled)
         torch.cuda.empty_cache()
-        pbar.update(1)              
+        _log_perf("decode_latent", _t)
+        _log_perf("run() total", _t_run)
+        pbar.update(1)
         if return_latent:
             if generate_texture_slat:
                 return out_mesh, (shape_slat, tex_slat, res)

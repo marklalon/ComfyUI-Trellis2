@@ -35,17 +35,20 @@ def __getattr__(name):
     return globals()[name]
 
 
-def from_pretrained(path: str, **kwargs):
+def from_pretrained(path: str, device: str = 'cpu', **kwargs):
     """
     Load a model from a pretrained checkpoint.
 
     Args:
         path: The path to the checkpoint. Can be either local path or a Hugging Face model name.
               NOTE: config file and model file should take the name f'{path}.json' and f'{path}.safetensors' respectively.
+        device: Target device string (e.g. 'cpu', 'cuda'). When 'cuda', weights are loaded
+                directly into GPU memory via safetensors, bypassing the CPU→GPU copy.
         **kwargs: Additional arguments for the model constructor.
     """
     import os
     import json
+    import torch
     from safetensors.torch import load_file
     is_local = os.path.exists(f"{path}.json") and os.path.exists(f"{path}.safetensors")
 
@@ -62,8 +65,42 @@ def from_pretrained(path: str, **kwargs):
 
     with open(config_file, 'r') as f:
         config = json.load(f)
-    model = __getattr__(config['name'])(**config['args'], **kwargs)
-    model.load_state_dict(load_file(model_file), strict=False)
+
+    if device != 'cpu' and torch.cuda.is_available():
+        # Skip random weight init during construction — weights come from checkpoint.
+        # This avoids expensive kaiming_uniform_ etc. on ~1B+ parameters.
+        # Computed attributes (RoPE freqs, position embeddings) still work correctly
+        # since they use torch.arange/meshgrid, not nn.init functions.
+        import torch.nn.init as _init
+        _orig_inits = {}
+        _noop = lambda tensor, *a, **kw: tensor
+        for _fn in ['uniform_', 'normal_', 'kaiming_uniform_', 'kaiming_normal_',
+                     'xavier_uniform_', 'xavier_normal_', 'zeros_', 'ones_',
+                     'constant_', 'orthogonal_', 'trunc_normal_']:
+            if hasattr(_init, _fn):
+                _orig_inits[_fn] = getattr(_init, _fn)
+                setattr(_init, _fn, _noop)
+        try:
+            model = __getattr__(config['name'])(**config['args'], **kwargs)
+        finally:
+            for _fn, _orig in _orig_inits.items():
+                setattr(_init, _fn, _orig)
+        # Collect dtype per parameter (convert_to already ran during init)
+        model_dtypes = {name: p.dtype for name, p in model.named_parameters()}
+        model_dtypes.update({name: b.dtype for name, b in model.named_buffers()})
+
+        state_dict = load_file(model_file, device=device)
+        state_dict = {k: v.to(model_dtypes[k]) if k in model_dtypes else v
+                      for k, v in state_dict.items()}
+        model.load_state_dict(state_dict, strict=False, assign=True)
+
+        # Move any remaining CPU tensors (buffers/attrs not in safetensors) to GPU.
+        # For tensors already on cuda, .to() is a no-op.
+        model.to(device)
+    else:
+        model = __getattr__(config['name'])(**config['args'], **kwargs)
+        state_dict = load_file(model_file)
+        model.load_state_dict(state_dict, strict=False)
 
     return model
 

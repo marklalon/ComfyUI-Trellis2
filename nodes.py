@@ -343,7 +343,7 @@ class Trellis2LoadModel:
                 "modelname": (["microsoft/TRELLIS.2-4B","visualbruno/TRELLIS.2-4B-FP8"],{"default":"microsoft/TRELLIS.2-4B"}),
                 "backend": (["flash_attn","xformers","sdpa","flash_attn_3"],{"default":"flash_attn"}),
                 "device": (["cpu","cuda"],{"default":"cuda"}),
-                "low_vram": ("BOOLEAN",{"default":True}),
+                "low_vram": ("BOOLEAN",{"default":False}),
                 "keep_models_loaded": ("BOOLEAN", {"default":True}),
             },
         }
@@ -358,15 +358,15 @@ class Trellis2LoadModel:
         os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"  # Can save GPU memory
         #os.environ["FLEX_GEMM_AUTOTUNE_CACHE_PATH"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'autotune_cache.json')
-        #os.environ["FLEX_GEMM_AUTOTUNER_VERBOSE"] = '1'        
+        #os.environ["FLEX_GEMM_AUTOTUNER_VERBOSE"] = '1'
         os.environ['ATTN_BACKEND'] = backend
-        
+
         config.set_backend(backend)
-        
+
         reset_cuda()
-        
-        torch.backends.cudnn.benchmark = False        
-            
+
+        torch.backends.cudnn.benchmark = False
+
         model_path = os.path.join(folder_paths.models_dir, modelname)
         
         if not os.path.exists(model_path):
@@ -480,9 +480,11 @@ class Trellis2MeshWithVoxelGenerator:
         # Build BVH for the current mesh to guide remeshing
         if generate_texture_slat:
             print("Building BVH for current mesh...")
-            bvh = CuMesh.cuBVH(vertices.detach().clone(), faces.detach().clone())           
-            bvh.vertices = vertices.detach().clone()
-            bvh.faces = faces.detach().clone()
+            _bvh_v = vertices.detach().clone()
+            _bvh_f = faces.detach().clone()
+            bvh = CuMesh.cuBVH(_bvh_v, _bvh_f)
+            bvh.vertices = _bvh_v
+            bvh.faces = _bvh_f
         else:
             print("Not building BVH : only used for texturing")
             bvh = None        
@@ -1344,9 +1346,11 @@ class Trellis2MeshWithVoxelAdvancedGenerator:
         if generate_texture_slat:
             # Build BVH for the current mesh to guide remeshing
             print("Building BVH for current mesh...")
-            bvh = CuMesh.cuBVH(vertices.detach().clone(), faces.detach().clone())           
-            bvh.vertices = vertices.detach().clone()
-            bvh.faces = faces.detach().clone()
+            _bvh_v = vertices.detach().clone()
+            _bvh_f = faces.detach().clone()
+            bvh = CuMesh.cuBVH(_bvh_v, _bvh_f)
+            bvh.vertices = _bvh_v
+            bvh.faces = _bvh_f
         else:
             print("Not building BVH : only used for texturing")
             bvh = None
@@ -1481,9 +1485,11 @@ class Trellis2MeshWithVoxelMultiViewGenerator:
         if generate_texture_slat:
             # Build BVH for the current mesh to guide remeshing
             print("Building BVH for current mesh...")
-            bvh = CuMesh.cuBVH(vertices.detach().clone(), faces.detach().clone())           
-            bvh.vertices = vertices.detach().clone()
-            bvh.faces = faces.detach().clone()
+            _bvh_v = vertices.detach().clone()
+            _bvh_f = faces.detach().clone()
+            bvh = CuMesh.cuBVH(_bvh_v, _bvh_f)
+            bvh.vertices = _bvh_v
+            bvh.faces = _bvh_f
         else:
             print("Not building BVH : only used for texturing")
             bvh = None
@@ -1658,7 +1664,7 @@ class Trellis2PostProcessAndUnWrapAndRasterizer:
             
         if fill_holes:
             new_vertices, new_faces = cumesh.read()
-            meshlib_mesh = mrmeshnumpy.meshFromFacesVerts(new_faces.detach().clone().cpu().numpy(), new_vertices.detach().clone().cpu().numpy())
+            meshlib_mesh = mrmeshnumpy.meshFromFacesVerts(new_faces.detach().cpu().numpy(), new_vertices.detach().cpu().numpy())
             hole_edges = meshlib_mesh.topology.findHoleRepresentiveEdges()
             holes_filled = 0
             
@@ -2468,9 +2474,11 @@ class Trellis2MeshRefiner:
         # Build BVH for the current mesh to guide remeshing
         if generate_texture_slat:
             print("Building BVH for current mesh...")
-            bvh = CuMesh.cuBVH(vertices.detach().clone(), faces.detach().clone())           
-            bvh.vertices = vertices.detach().clone()
-            bvh.faces = faces.detach().clone()
+            _bvh_v = vertices.detach().clone()
+            _bvh_f = faces.detach().clone()
+            bvh = CuMesh.cuBVH(_bvh_v, _bvh_f)
+            bvh.vertices = _bvh_v
+            bvh.faces = _bvh_f
         else:
             print('Not building BVH, only used for texturing')
             bvh = None
@@ -2727,7 +2735,7 @@ class Trellis2FillHolesWithMeshlib:
         import meshlib.mrmeshpy as mrmeshpy
         
         mesh_copy = copy.deepcopy(mesh)
-        mesh = mrmeshnumpy.meshFromFacesVerts(mesh_copy.faces.detach().clone().cpu().numpy(), mesh_copy.vertices.detach().clone().cpu().numpy())
+        mesh = mrmeshnumpy.meshFromFacesVerts(mesh_copy.faces.detach().cpu().numpy(), mesh_copy.vertices.detach().cpu().numpy())
         
         hole_edges = mesh.topology.findHoleRepresentiveEdges()
         holes_filled = 0
@@ -2948,8 +2956,8 @@ class Trellis2BatchSimplifyMeshAndExport:
             for target_nbfaces in list_of_faces:
                 print(f"Processing at {target_nbfaces} ...")                
                 
-                vertices = mesh_copy.vertices.detach().clone().cpu().numpy()
-                faces = mesh_copy.faces.detach().clone().cpu().numpy()                                
+                vertices = mesh_copy.vertices.detach().cpu().numpy()
+                faces = mesh_copy.faces.detach().cpu().numpy()                                
                 
                 if method=="Cumesh":
                     cumesh.init(torch.from_numpy(vertices).float().cuda(), torch.from_numpy(faces).int().cuda())
@@ -3363,9 +3371,11 @@ class Trellis2MeshWithVoxelCascadeGenerator:
         if generate_texture_slat:
             # Build BVH for the current mesh to guide remeshing
             print("Building BVH for current mesh...")
-            bvh = CuMesh.cuBVH(vertices.detach().clone(), faces.detach().clone())           
-            bvh.vertices = vertices.detach().clone()
-            bvh.faces = faces.detach().clone()
+            _bvh_v = vertices.detach().clone()
+            _bvh_f = faces.detach().clone()
+            bvh = CuMesh.cuBVH(_bvh_v, _bvh_f)
+            bvh.vertices = _bvh_v
+            bvh.faces = _bvh_f
         else:
             print("Not building BVH : only used for texturing")
             bvh = None
@@ -3759,9 +3769,11 @@ class Trellis2DecodeLatents:
             faces = mesh.faces.cuda()   
             
             print("Building BVH for current mesh...")
-            bvh = CuMesh.cuBVH(vertices.detach().clone(), faces.detach().clone())           
-            bvh.vertices = vertices.detach().clone()
-            bvh.faces = faces.detach().clone()            
+            _bvh_v = vertices.detach().clone()
+            _bvh_f = faces.detach().clone()
+            bvh = CuMesh.cuBVH(_bvh_v, _bvh_f)
+            bvh.vertices = _bvh_v
+            bvh.faces = _bvh_f            
         
         
         return (mesh, bvh, pipeline,)    
