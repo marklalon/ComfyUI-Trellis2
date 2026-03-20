@@ -2519,15 +2519,14 @@ class Trellis2ImageTo3DPipeline(Pipeline):
             )
             
             if not self.keep_models_loaded:
-                self.unload_shape_slat_flow_model_1024()
+                self.unload_tex_slat_flow_model_1024()
 
         torch.cuda.empty_cache()
         pbr_voxel = self.decode_tex_slat(tex_slat)
-        torch.cuda.empty_cache()
-        
+
         out_mesh, baseColorTexture, metallicRoughnessTexture = self.postprocess_mesh(mesh, pbr_voxel, resolution, texture_size, texture_alpha_mode, double_side_material, bake_on_vertices, use_custom_normals, mesh_cluster_threshold_cone_half_angle_rad)
         return out_mesh, baseColorTexture, metallicRoughnessTexture
-        
+
     @torch.no_grad()
     def texture_mesh_multiview(
         self,
@@ -2614,15 +2613,14 @@ class Trellis2ImageTo3DPipeline(Pipeline):
             )                          
             
             if not self.keep_models_loaded:
-                self.unload_shape_slat_flow_model_1024()
-                
+                self.unload_tex_slat_flow_model_1024()
+
         torch.cuda.empty_cache()
         pbr_voxel = self.decode_tex_slat(tex_slat)
-        torch.cuda.empty_cache()
-        
+
         out_mesh, baseColorTexture, metallicRoughnessTexture = self.postprocess_mesh(mesh, pbr_voxel, resolution, texture_size, texture_alpha_mode, double_side_material, bake_on_vertices, use_custom_normals, mesh_cluster_threshold_cone_half_angle_rad)
-        return out_mesh, baseColorTexture, metallicRoughnessTexture        
-    
+        return out_mesh, baseColorTexture, metallicRoughnessTexture
+
     def get_coords_from_trimesh(self, mesh, resolution):
         vertices = torch.from_numpy(mesh.vertices).float()
         faces = torch.from_numpy(mesh.faces).long()

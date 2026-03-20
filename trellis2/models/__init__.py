@@ -80,22 +80,35 @@ def from_pretrained(path: str, device: str = 'cpu', **kwargs):
             if hasattr(_init, _fn):
                 _orig_inits[_fn] = getattr(_init, _fn)
                 setattr(_init, _fn, _noop)
+
         try:
             model = __getattr__(config['name'])(**config['args'], **kwargs)
         finally:
             for _fn, _orig in _orig_inits.items():
                 setattr(_init, _fn, _orig)
-        # Collect dtype per parameter (convert_to already ran during init)
-        model_dtypes = {name: p.dtype for name, p in model.named_parameters()}
-        model_dtypes.update({name: b.dtype for name, b in model.named_buffers()})
 
+        # Capture the mixed-precision dtype layout from construction.
+        # Models like SLatFlowModel.convert_to(bfloat16) only convert self.blocks,
+        # leaving input_layer/out_layer in float32. Similarly FlexiDualGridVaeEncoder
+        # with convert_to_fp16() keeps input_layer float32, blocks fp16.
+        # Without set_default_dtype interference, these dtypes are authoritative.
+        _model_dtypes = {n: p.dtype for n, p in model.named_parameters()}
+
+        # Load weights directly from safetensors to GPU.
+        # assign=True replaces parameter tensors for fast loading without
+        # double-allocation, but some safetensors files store ALL weights
+        # at a single dtype (e.g. fp16 VAE), losing the mixed-precision layout.
         state_dict = load_file(model_file, device=device)
-        state_dict = {k: v.to(model_dtypes[k]) if k in model_dtypes else v
-                      for k, v in state_dict.items()}
         model.load_state_dict(state_dict, strict=False, assign=True)
 
+        # Restore mixed-precision dtype layout where safetensors disagrees
+        # with the model's construction-time dtypes.
+        for _name, _param in model.named_parameters():
+            _expected = _model_dtypes.get(_name)
+            if _expected is not None and _param.dtype != _expected:
+                _param.data = _param.data.to(_expected)
+
         # Move any remaining CPU tensors (buffers/attrs not in safetensors) to GPU.
-        # For tensors already on cuda, .to() is a no-op.
         model.to(device)
     else:
         model = __getattr__(config['name'])(**config['args'], **kwargs)
