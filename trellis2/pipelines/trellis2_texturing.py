@@ -8,6 +8,7 @@ from .base import Pipeline
 from . import samplers, rembg
 from ..modules.sparse import SparseTensor
 from ..modules import image_feature_extractor
+from ..utils.voxel_utils import mesh_to_flexible_dual_grid
 import o_voxel
 import cumesh
 import nvdiffrast.torch as dr
@@ -184,6 +185,7 @@ class Trellis2TexturingPipeline(Pipeline):
         self,
         mesh: trimesh.Trimesh,
         resolution: int = 1024,
+        use_gpu_voxelization: bool = True,
     ) -> SparseTensor:
         """
         Encode the meshes to structured latent.
@@ -191,6 +193,7 @@ class Trellis2TexturingPipeline(Pipeline):
         Args:
             mesh (trimesh.Trimesh): The mesh to encode.
             resolution (int): The resolution of mesh
+            use_gpu_voxelization (bool): Whether to use GPU for voxelization.
         
         Returns:
             SparseTensor: The encoded structured latent.
@@ -198,7 +201,7 @@ class Trellis2TexturingPipeline(Pipeline):
         vertices = torch.from_numpy(mesh.vertices).float()
         faces = torch.from_numpy(mesh.faces).long()
         
-        voxel_indices, dual_vertices, intersected = o_voxel.convert.mesh_to_flexible_dual_grid(
+        voxel_indices, dual_vertices, intersected = mesh_to_flexible_dual_grid(
             vertices.cpu(), faces.cpu(),
             grid_size=resolution,
             aabb=[[-0.5,-0.5,-0.5],[0.5,0.5,0.5]],
@@ -206,6 +209,7 @@ class Trellis2TexturingPipeline(Pipeline):
             boundary_weight=0.2,
             regularization_weight=1e-2,
             timing=True,
+            use_gpu=use_gpu_voxelization,
         )
             
         vertices = SparseTensor(
@@ -381,6 +385,7 @@ class Trellis2TexturingPipeline(Pipeline):
         preprocess_image: bool = True,
         resolution: int = 1024,
         texture_size: int = 2048,
+        use_gpu_voxelization: bool = True,
     ) -> trimesh.Trimesh:
         """
         Run the pipeline.
@@ -391,13 +396,14 @@ class Trellis2TexturingPipeline(Pipeline):
             seed (int): The random seed.
             tex_slat_sampler_params (dict): Additional parameters for the texture latent sampler.
             preprocess_image (bool): Whether to preprocess the image.
+            use_gpu_voxelization (bool): Whether to use GPU for voxelization.
         """
         if preprocess_image:
             image = self.preprocess_image(image)
         mesh = self.preprocess_mesh(mesh)
         torch.manual_seed(seed)
         cond = self.get_cond([image], 512) if resolution == 512 else self.get_cond([image], 1024)
-        shape_slat = self.encode_shape_slat(mesh, resolution)
+        shape_slat = self.encode_shape_slat(mesh, resolution, use_gpu_voxelization)
         tex_model = self.models['tex_slat_flow_model_512'] if resolution == 512 else self.models['tex_slat_flow_model_1024']
         tex_slat = self.sample_tex_slat(
             cond, tex_model,

@@ -40,6 +40,7 @@ from .trellis2.representations import Mesh, MeshWithVoxel
 from .trellis2.modules.attention import config
 from .trellis2.pipelines import samplers
 from .trellis2.modules.sparse import SparseTensor
+from .trellis2.utils.voxel_utils import mesh_to_flexible_dual_grid
 
 script_directory = os.path.dirname(os.path.abspath(__file__))
 comfy_path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -2164,6 +2165,7 @@ class Trellis2MeshTexturing:
                 "use_custom_normals": ("BOOLEAN",{"default":False}),
                 "mesh_cluster_threshold_cone_half_angle_rad": ("FLOAT",{"default":60.0,"min":0.0,"max":359.9}),
                 "sampler": (["euler", "heun", "rk4", "rk5"], {"default": "euler"}),
+                "use_gpu_voxelization": ("BOOLEAN", {"default": True}),
             },
         }
 
@@ -2173,7 +2175,7 @@ class Trellis2MeshTexturing:
     CATEGORY = "Trellis2Wrapper"
     OUTPUT_NODE = True
 
-    def process(self, pipeline, image, trimesh, seed, texture_steps, texture_guidance_strength, texture_guidance_rescale, texture_rescale_t, resolution, texture_size, texture_alpha_mode, double_side_material, texture_guidance_interval_start, texture_guidance_interval_end, max_views,bake_on_vertices,use_custom_normals,mesh_cluster_threshold_cone_half_angle_rad, sampler):
+    def process(self, pipeline, image, trimesh, seed, texture_steps, texture_guidance_strength, texture_guidance_rescale, texture_rescale_t, resolution, texture_size, texture_alpha_mode, double_side_material, texture_guidance_interval_start, texture_guidance_interval_end, max_views,bake_on_vertices,use_custom_normals,mesh_cluster_threshold_cone_half_angle_rad, sampler, use_gpu_voxelization):
         images = tensor_batch_to_pil_list(image, max_views=max_views)
         image_in = images[0] if len(images) == 1 else images
 
@@ -2195,7 +2197,8 @@ class Trellis2MeshTexturing:
             bake_on_vertices = bake_on_vertices,
             use_custom_normals = use_custom_normals,
             mesh_cluster_threshold_cone_half_angle_rad = mesh_cluster_threshold_cone_half_angle_rad,
-            sampler = sampler
+            sampler = sampler,
+            use_gpu_voxelization = use_gpu_voxelization,
         )            
 
         baseColorTexture = pil2tensor(baseColorTexture_np)
@@ -2228,6 +2231,7 @@ class Trellis2MeshTexturingMultiView:
                 "front_axis": (["z", "x"], {"default": "z"}),
                 "blend_temperature": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1}),
                 "sampler": (["euler", "heun", "rk4", "rk5"], {"default": "euler"}),
+                "use_gpu_voxelization": ("BOOLEAN", {"default": True}),
             },
             "optional": {
                 "back_image": ("IMAGE",),
@@ -2263,6 +2267,7 @@ class Trellis2MeshTexturingMultiView:
         front_axis,
         blend_temperature,
         sampler,
+        use_gpu_voxelization,
         back_image = None,
         left_image = None,
         right_image = None):
@@ -2297,7 +2302,8 @@ class Trellis2MeshTexturingMultiView:
             mesh_cluster_threshold_cone_half_angle_rad = mesh_cluster_threshold_cone_half_angle_rad,
             front_axis = front_axis,
             blend_temperature = blend_temperature,
-            sampler = sampler
+            sampler = sampler,
+            use_gpu_voxelization = use_gpu_voxelization,
         )            
 
         baseColorTexture = pil2tensor(baseColorTexture_np)
@@ -2444,6 +2450,7 @@ class Trellis2MeshRefiner:
                 "use_tiled_decoder": ("BOOLEAN", {"default":True}),
                 "max_views": ("INT", {"default": 4, "min": 1, "max": 16}),
                 "sampler": (["euler", "heun", "rk4", "rk5"], {"default": "euler"}),
+                "use_gpu_voxelization": ("BOOLEAN", {"default": True}),
             },
         }
 
@@ -2454,14 +2461,14 @@ class Trellis2MeshRefiner:
     OUTPUT_NODE = True
 
     def process(self, pipeline, trimesh, image, seed, resolution,
-        shape_steps, 
-        shape_guidance_strength, 
+        shape_steps,
+        shape_guidance_strength,
         shape_guidance_rescale,
-        shape_rescale_t,        
-        texture_steps, 
-        texture_guidance_strength, 
+        shape_rescale_t,
+        texture_steps,
+        texture_guidance_strength,
         texture_guidance_rescale,
-        texture_rescale_t,        
+        texture_rescale_t,
         max_num_tokens,
         generate_texture_slat,
         downsampling,
@@ -2471,7 +2478,8 @@ class Trellis2MeshRefiner:
         texture_guidance_interval_end,
         use_tiled_decoder,
         max_views,
-        sampler):
+        sampler,
+        use_gpu_voxelization):
 
         reset_cuda()
 
@@ -2484,7 +2492,7 @@ class Trellis2MeshRefiner:
         shape_slat_sampler_params = {"steps":shape_steps,"guidance_strength":shape_guidance_strength,"guidance_rescale":shape_guidance_rescale,"guidance_interval":shape_guidance_interval,"rescale_t":shape_rescale_t}       
         tex_slat_sampler_params = {"steps":texture_steps,"guidance_strength":texture_guidance_strength,"guidance_rescale":texture_guidance_rescale,"guidance_interval":texture_guidance_interval,"rescale_t":texture_rescale_t}
         
-        mesh = pipeline.refine_mesh(mesh = trimesh, image=image_in, seed=seed, shape_slat_sampler_params = shape_slat_sampler_params, tex_slat_sampler_params = tex_slat_sampler_params, resolution = resolution, max_num_tokens = max_num_tokens, generate_texture_slat=generate_texture_slat, downsampling=downsampling, use_tiled=use_tiled_decoder, max_views = max_views, sampler = sampler)[0]         
+        mesh = pipeline.refine_mesh(mesh = trimesh, image=image_in, seed=seed, shape_slat_sampler_params = shape_slat_sampler_params, tex_slat_sampler_params = tex_slat_sampler_params, resolution = resolution, max_num_tokens = max_num_tokens, generate_texture_slat=generate_texture_slat, downsampling=downsampling, use_tiled=use_tiled_decoder, max_views = max_views, sampler = sampler, use_gpu_voxelization = use_gpu_voxelization)[0]         
         
         vertices = mesh.vertices.cuda()
         faces = mesh.faces.cuda()        
@@ -2637,6 +2645,7 @@ class Trellis2TrimeshToMeshWithVoxel:
             "required": {
                 "trimesh": ("TRIMESH",),
                 "resolution": ([512,1024],{"default":1024}),
+                "use_gpu_voxelization": ("BOOLEAN", {"default": True}),
             },
         }
 
@@ -2646,18 +2655,18 @@ class Trellis2TrimeshToMeshWithVoxel:
     CATEGORY = "Trellis2Wrapper"
     OUTPUT_NODE = True
 
-    def process(self, trimesh, resolution):       
+    def process(self, trimesh, resolution, use_gpu_voxelization=True):       
         mesh_copy = trimesh.copy()
         
-        mvoxel = self.get_voxelmesh_from_trimesh(mesh_copy, resolution)
+        mvoxel = self.get_voxelmesh_from_trimesh(mesh_copy, resolution, use_gpu_voxelization)
         
         return (mvoxel,)        
         
-    def get_voxelmesh_from_trimesh(self, mesh, resolution):
+    def get_voxelmesh_from_trimesh(self, mesh, resolution, use_gpu_voxelization=True):
         vertices = torch.from_numpy(mesh.vertices).float()
         faces = torch.from_numpy(mesh.faces).long()
         
-        voxel_indices, dual_vertices, intersected = o_voxel.convert.mesh_to_flexible_dual_grid(
+        voxel_indices, dual_vertices, intersected = mesh_to_flexible_dual_grid(
             vertices.cpu(), faces.cpu(),
             grid_size=resolution,
             aabb=[[-0.5,-0.5,-0.5],[0.5,0.5,0.5]],
@@ -2665,6 +2674,7 @@ class Trellis2TrimeshToMeshWithVoxel:
             boundary_weight=0.2,
             regularization_weight=1e-2,
             timing=True,
+            use_gpu=use_gpu_voxelization,
         )
         
         coords = torch.cat([torch.zeros_like(voxel_indices[:, 0:1]), voxel_indices], dim=-1)                

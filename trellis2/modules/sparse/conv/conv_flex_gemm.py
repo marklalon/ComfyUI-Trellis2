@@ -38,6 +38,9 @@ def sparse_conv3d_forward(self, x: SparseTensor) -> SparseTensor:
     flex_gemm.ops.spconv.set_algorithm(config.FLEX_GEMM_ALGO)
     flex_gemm.ops.spconv.set_hashmap_ratio(config.FLEX_GEMM_HASHMAP_RATIO)
 
+    if x.coords.dtype != torch.int32:
+        x.coords = x.coords.to(dtype=torch.int32)
+
     # check if neighbor map is already computed
     Co, Kd, Kh, Kw, Ci = self.weight.shape
     neighbor_cache_key = f'SubMConv3d_neighbor_cache_{Kw}x{Kh}x{Kd}_dilation{self.dilation}'

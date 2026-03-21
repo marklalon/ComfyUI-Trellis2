@@ -8,6 +8,7 @@ from . import samplers, rembg
 from ..modules.sparse import SparseTensor
 from ..modules import image_feature_extractor
 from ..representations import Mesh, MeshWithVoxel
+from ..utils.voxel_utils import mesh_to_flexible_dual_grid
 
 from .. import models
 
@@ -2187,6 +2188,7 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         self,
         mesh: trimesh.Trimesh,
         resolution: int = 1024,
+        use_gpu_voxelization: bool = True,
     ) -> SparseTensor:
         """
         Encode the meshes to structured latent.
@@ -2194,6 +2196,7 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         Args:
             mesh (trimesh.Trimesh): The mesh to encode.
             resolution (int): The resolution of mesh
+            use_gpu_voxelization (bool): Whether to use GPU for voxelization.
         
         Returns:
             SparseTensor: The encoded structured latent.
@@ -2202,7 +2205,7 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         vertices = torch.from_numpy(mesh.vertices).float()
         faces = torch.from_numpy(mesh.faces).long()
         
-        voxel_indices, dual_vertices, intersected = o_voxel.convert.mesh_to_flexible_dual_grid(
+        voxel_indices, dual_vertices, intersected = mesh_to_flexible_dual_grid(
             vertices.cpu(), faces.cpu(),
             grid_size=resolution,
             aabb=[[-0.5,-0.5,-0.5],[0.5,0.5,0.5]],
@@ -2210,6 +2213,7 @@ class Trellis2ImageTo3DPipeline(Pipeline):
             boundary_weight=0.2,
             regularization_weight=1e-2,
             timing=True,
+            use_gpu=use_gpu_voxelization,
         )
             
         vertices = SparseTensor(
@@ -2471,7 +2475,8 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         bake_on_vertices = False,
         use_custom_normals = False,
         mesh_cluster_threshold_cone_half_angle_rad=60.0,
-        sampler: str = 'euler'
+        sampler: str = 'euler',
+        use_gpu_voxelization: bool = True,
     ):
         self.switch_samplers(sampler)
         
@@ -2494,7 +2499,7 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         if not self.keep_models_loaded:
             self.unload_image_cond_model()
         
-        shape_slat = self.encode_shape_slat(mesh, resolution)
+        shape_slat = self.encode_shape_slat(mesh, resolution, use_gpu_voxelization)
         
         if resolution==512:
             self.unload_tex_slat_flow_model_1024()
@@ -2546,7 +2551,8 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         mesh_cluster_threshold_cone_half_angle_rad=60.0,
         front_axis: str = 'z',
         blend_temperature: float = 2.0,
-        sampler: str = 'euler'
+        sampler: str = 'euler',
+        use_gpu_voxelization: bool = True,
     ):
         self.switch_samplers(sampler)
         
@@ -2580,7 +2586,7 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         if not self.keep_models_loaded:
             self.unload_image_cond_model()
         
-        shape_slat = self.encode_shape_slat(mesh, resolution)
+        shape_slat = self.encode_shape_slat(mesh, resolution, use_gpu_voxelization)
         
         if resolution==512:
             self.unload_tex_slat_flow_model_1024()
@@ -2621,11 +2627,11 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         out_mesh, baseColorTexture, metallicRoughnessTexture = self.postprocess_mesh(mesh, pbr_voxel, resolution, texture_size, texture_alpha_mode, double_side_material, bake_on_vertices, use_custom_normals, mesh_cluster_threshold_cone_half_angle_rad)
         return out_mesh, baseColorTexture, metallicRoughnessTexture
 
-    def get_coords_from_trimesh(self, mesh, resolution):
+    def get_coords_from_trimesh(self, mesh, resolution, use_gpu_voxelization=True):
         vertices = torch.from_numpy(mesh.vertices).float()
         faces = torch.from_numpy(mesh.faces).long()
         
-        voxel_indices, dual_vertices, intersected = o_voxel.convert.mesh_to_flexible_dual_grid(
+        voxel_indices, dual_vertices, intersected = mesh_to_flexible_dual_grid(
             vertices.cpu(), faces.cpu(),
             grid_size=resolution,
             aabb=[[-0.5,-0.5,-0.5],[0.5,0.5,0.5]],
@@ -2633,6 +2639,7 @@ class Trellis2ImageTo3DPipeline(Pipeline):
             boundary_weight=0.2,
             regularization_weight=1e-2,
             timing=True,
+            use_gpu=use_gpu_voxelization,
         )
         
         coords = torch.cat([torch.zeros_like(voxel_indices[:, 0:1]), voxel_indices], dim=-1)                
@@ -2749,7 +2756,8 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         downsampling = 16,
         use_tiled: bool = True,
         max_views: int = 4,
-        sampler: str = 'euler'
+        sampler: str = 'euler',
+        use_gpu_voxelization: bool = True,
     ):
         self.switch_samplers(sampler)
         
@@ -2771,7 +2779,7 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         if not self.keep_models_loaded:
             self.unload_image_cond_model()        
         
-        mesh_slat = self.encode_shape_slat(mesh, resolution)
+        mesh_slat = self.encode_shape_slat(mesh, resolution, use_gpu_voxelization)
         
         if resolution==512:
             self.unload_shape_slat_flow_model_1024()
