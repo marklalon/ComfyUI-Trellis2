@@ -26,6 +26,7 @@ import flex_gemm
 from flex_gemm.ops.grid_sample import grid_sample_3d
 
 import random
+from concurrent.futures import ThreadPoolExecutor
 
 from comfy.utils import ProgressBar
 
@@ -2387,18 +2388,24 @@ class Trellis2ImageTo3DPipeline(Pipeline):
                 
         # rasterize
         print('Finalizing mesh ...')
+        t_start = time.perf_counter() if _PERF_ENABLED else 0
+        
+        # Step 1: Rasterization
+        t0 = time.perf_counter() if _PERF_ENABLED else 0
         ctx = dr.RasterizeCudaContext()
         uvs_torch = torch.cat([uvs_torch * 2 - 1, torch.zeros_like(uvs_torch[:, :1]), torch.ones_like(uvs_torch[:, :1])], dim=-1).unsqueeze(0)
         rast, _ = dr.rasterize(
             ctx, uvs_torch, faces_torch,
             resolution=[texture_size, texture_size],
         )
-        
         torch.cuda.synchronize()
+        if _PERF_ENABLED:
+            print(f"  [Finalize] Rasterization: {time.perf_counter() - t0:.3f}s")
         
+        # Step 2: Grid sample
+        t0 = time.perf_counter() if _PERF_ENABLED else 0
         mask = rast[0, ..., 3] > 0
         pos = dr.interpolate(vertices_torch.unsqueeze(0), rast, faces_torch)[0][0]
-        
         attrs = torch.zeros(texture_size, texture_size, pbr_voxel.shape[1], device=self.device)
         attrs[mask] = flex_gemm.ops.grid_sample.grid_sample_3d(
             pbr_voxel.feats,
@@ -2407,22 +2414,40 @@ class Trellis2ImageTo3DPipeline(Pipeline):
             grid=((pos[mask] + 0.5) * resolution).reshape(1, -1, 3),
             mode='trilinear',
         )
-        
         torch.cuda.synchronize()
+        if _PERF_ENABLED:
+            print(f"  [Finalize] Grid sample: {time.perf_counter() - t0:.3f}s")
         
-        # construct mesh
-        mask = mask.cpu().numpy()
-        base_color = np.clip(attrs[..., self.pbr_attr_layout['base_color']].cpu().numpy() * 255, 0, 255).astype(np.uint8)
-        metallic = np.clip(attrs[..., self.pbr_attr_layout['metallic']].cpu().numpy() * 255, 0, 255).astype(np.uint8)
-        roughness = np.clip(attrs[..., self.pbr_attr_layout['roughness']].cpu().numpy() * 255, 0, 255).astype(np.uint8)
-        alpha = np.clip(attrs[..., self.pbr_attr_layout['alpha']].cpu().numpy() * 255, 0, 255).astype(np.uint8)
+        # Step 3: GPU→CPU transfer (合并为一次传输)
+        t0 = time.perf_counter() if _PERF_ENABLED else 0
+        mask_np = mask.cpu().numpy()
+        attrs_np = attrs.cpu().numpy()  # 一次传输而非多次
+        base_color = np.clip(attrs_np[..., self.pbr_attr_layout['base_color']] * 255, 0, 255).astype(np.uint8)
+        metallic = np.clip(attrs_np[..., self.pbr_attr_layout['metallic']] * 255, 0, 255).astype(np.uint8)
+        roughness = np.clip(attrs_np[..., self.pbr_attr_layout['roughness']] * 255, 0, 255).astype(np.uint8)
+        alpha = np.clip(attrs_np[..., self.pbr_attr_layout['alpha']] * 255, 0, 255).astype(np.uint8)
+        if _PERF_ENABLED:
+            print(f"  [Finalize] GPU→CPU transfer: {time.perf_counter() - t0:.3f}s")
         
-        # extend
-        mask = (~mask).astype(np.uint8)
-        base_color = cv2.inpaint(base_color, mask, 3, cv2.INPAINT_TELEA)
-        metallic = cv2.inpaint(metallic, mask, 1, cv2.INPAINT_TELEA)[..., None]
-        roughness = cv2.inpaint(roughness, mask, 1, cv2.INPAINT_TELEA)[..., None]
-        alpha = cv2.inpaint(alpha, mask, 1, cv2.INPAINT_TELEA)[..., None]
+        # Step 4: Inpainting (并行化)
+        t0 = time.perf_counter() if _PERF_ENABLED else 0
+        mask_inv = (~mask_np).astype(np.uint8)
+        
+        def inpaint_parallel():
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                f_base = executor.submit(cv2.inpaint, base_color, mask_inv, 3, cv2.INPAINT_TELEA)
+                f_metal = executor.submit(cv2.inpaint, metallic, mask_inv, 1, cv2.INPAINT_TELEA)
+                f_rough = executor.submit(cv2.inpaint, roughness, mask_inv, 1, cv2.INPAINT_TELEA)
+                f_alpha = executor.submit(cv2.inpaint, alpha, mask_inv, 1, cv2.INPAINT_TELEA)
+                return f_base.result(), f_metal.result(), f_rough.result(), f_alpha.result()
+        
+        base_color, metallic, roughness, alpha = inpaint_parallel()
+        metallic = metallic[..., None]
+        roughness = roughness[..., None]
+        alpha = alpha[..., None]
+        if _PERF_ENABLED:
+            print(f"  [Finalize] Inpainting (parallel): {time.perf_counter() - t0:.3f}s")
+            print(f"  [Finalize] Total: {time.perf_counter() - t_start:.3f}s")
         
         baseColorTexture = Image.fromarray(np.concatenate([base_color, alpha], axis=-1))
         metallicRoughnessTexture = Image.fromarray(np.concatenate([np.zeros_like(metallic), roughness, metallic], axis=-1))

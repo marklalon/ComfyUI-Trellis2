@@ -12,6 +12,7 @@ import shutil
 import uuid
 import triton
 import triton.compiler
+from concurrent.futures import ThreadPoolExecutor
 
 import folder_paths
 import node_helpers
@@ -44,6 +45,9 @@ from .trellis2.utils.voxel_utils import mesh_to_flexible_dual_grid
 
 script_directory = os.path.dirname(os.path.abspath(__file__))
 comfy_path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+
+# Performance logging — set TRELLIS2_PERF_LOG=1 to enable
+_PERF_ENABLED = os.getenv("TRELLIS2_PERF_LOG", "0") == "1"
 
 BASE_CACHE_DIR = Path(os.path.dirname(os.path.realpath(__file__))) / "triton_caches"
 #os.environ["TRITON_ALWAYS_COMPILE"] = "1"
@@ -1208,22 +1212,41 @@ class Trellis2UnWrapAndRasterizer:
         
         # --- Texture Post-Processing & Material Construction ---
         print("Finalizing mesh...")
+        t_start = time.perf_counter() if _PERF_ENABLED else 0
         
-        mask = mask.cpu().numpy()
+        # Step 1: GPU→CPU transfer (合并为一次传输)
+        t0 = time.perf_counter() if _PERF_ENABLED else 0
+        mask_np = mask.cpu().numpy()
+        attrs_np = attrs.cpu().numpy()  # 一次传输而非多次
         
         # Extract channels based on layout (BaseColor, Metallic, Roughness, Alpha)
-        base_color = np.clip(attrs[..., attr_layout['base_color']].cpu().numpy() * 255, 0, 255).astype(np.uint8)
-        metallic = np.clip(attrs[..., attr_layout['metallic']].cpu().numpy() * 255, 0, 255).astype(np.uint8)
-        roughness = np.clip(attrs[..., attr_layout['roughness']].cpu().numpy() * 255, 0, 255).astype(np.uint8)
-        alpha = np.clip(attrs[..., attr_layout['alpha']].cpu().numpy() * 255, 0, 255).astype(np.uint8)
+        base_color = np.clip(attrs_np[..., attr_layout['base_color']] * 255, 0, 255).astype(np.uint8)
+        metallic = np.clip(attrs_np[..., attr_layout['metallic']] * 255, 0, 255).astype(np.uint8)
+        roughness = np.clip(attrs_np[..., attr_layout['roughness']] * 255, 0, 255).astype(np.uint8)
+        alpha = np.clip(attrs_np[..., attr_layout['alpha']] * 255, 0, 255).astype(np.uint8)
         alpha_mode = texture_alpha_mode
+        if _PERF_ENABLED:
+            print(f"  [Finalize] GPU→CPU transfer: {time.perf_counter() - t0:.3f}s")
         
-        # Inpainting: fill gaps (dilation) to prevent black seams at UV boundaries
-        mask_inv = (~mask).astype(np.uint8)
-        base_color = cv2.inpaint(base_color, mask_inv, 1, cv2.INPAINT_TELEA)
-        metallic = cv2.inpaint(metallic, mask_inv, 1, cv2.INPAINT_TELEA)[..., None]
-        roughness = cv2.inpaint(roughness, mask_inv, 1, cv2.INPAINT_TELEA)[..., None]
-        alpha = cv2.inpaint(alpha, mask_inv, 1, cv2.INPAINT_TELEA)[..., None]
+        # Step 2: Inpainting (并行化)
+        t0 = time.perf_counter() if _PERF_ENABLED else 0
+        mask_inv = (~mask_np).astype(np.uint8)
+        
+        def inpaint_parallel():
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                f_base = executor.submit(cv2.inpaint, base_color, mask_inv, 1, cv2.INPAINT_TELEA)
+                f_metal = executor.submit(cv2.inpaint, metallic, mask_inv, 1, cv2.INPAINT_TELEA)
+                f_rough = executor.submit(cv2.inpaint, roughness, mask_inv, 1, cv2.INPAINT_TELEA)
+                f_alpha = executor.submit(cv2.inpaint, alpha, mask_inv, 1, cv2.INPAINT_TELEA)
+                return f_base.result(), f_metal.result(), f_rough.result(), f_alpha.result()
+        
+        base_color, metallic, roughness, alpha = inpaint_parallel()
+        metallic = metallic[..., None]
+        roughness = roughness[..., None]
+        alpha = alpha[..., None]
+        if _PERF_ENABLED:
+            print(f"  [Finalize] Inpainting (parallel): {time.perf_counter() - t0:.3f}s")
+            print(f"  [Finalize] Total: {time.perf_counter() - t_start:.3f}s")
         
         # Create PBR material
         # Standard PBR packs Metallic and Roughness into Blue and Green channels
